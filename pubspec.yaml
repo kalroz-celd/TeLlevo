@@ -1,7 +1,7 @@
 name: tellevo
 description: "A new Flutter project."
 publish_to: "none"
-version: 1.0.18+19
+version: 1.0.19+20
 
 environment:
   sdk: ^3.7.2
@@ -15,7 +15,7 @@ dependencies:
   provider: ^6.1.5
   dio: ^5.8.0+1
   device_info_plus: ^11.5.0
-  image_picker: ^1.1.2
+  image_picker: ^1.2.1
   camera: ^0.11.2
   path: ^1.8.3
   flutter_native_splash: ^2.4.6
