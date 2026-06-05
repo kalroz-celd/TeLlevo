@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart' show Dio, DioException, Options;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -53,22 +55,33 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
 
     try {
       final resp = await _client.get(
-        // ✅ Ajusta la ruta a tu backend
         '/driver/trips-history',
+        queryParameters: {'month': _formatMonthForQuery(_selectedMonth)},
         options: Options(
           headers: _token != null ? {'Authorization': 'Bearer $_token'} : null,
         ),
       );
 
       final raw = resp.data;
+      debugPrint(
+        'driver/trips-history raw response: ${const JsonEncoder.withIndent('  ').convert(raw)}',
+      );
 
-      // Soporta:
-      // { data: [...] }  o  { trips: [...] }  o  [...]
-      List list;
-      if (raw is Map && raw['data'] is List) {
-        list = raw['data'] as List;
-      } else if (raw is Map && raw['trips'] is List) {
-        list = raw['trips'] as List;
+      // Soporta respuestas planas y agrupadas por fecha:
+      // { data: [...] }, { data: { '2026-06-01': [...] } }, { trips: [...] }, [...]
+      List<dynamic> list;
+      if (raw is Map) {
+        if (raw['data'] is List) {
+          list = raw['data'] as List;
+        } else if (raw['data'] is Map) {
+          list = _extractTripItems(raw['data'] as Map);
+        } else if (raw['trips'] is List) {
+          list = raw['trips'] as List;
+        } else if (raw['trips'] is Map) {
+          list = _extractTripItems(raw['trips'] as Map);
+        } else {
+          list = const [];
+        }
       } else if (raw is List) {
         list = raw;
       } else {
@@ -76,7 +89,7 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
       }
 
       _safeSet(() {
-        _allTrips = list.cast<Map<String, dynamic>>();
+        _allTrips = _normalizeTripList(list);
         _applyMonthFilter();
       });
     } on DioException catch (e) {
@@ -94,6 +107,42 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     }
   }
 
+  List<dynamic> _extractTripItems(Map rawData) {
+    final items = <dynamic>[];
+    for (final value in rawData.values) {
+      if (value is List) {
+        items.addAll(value);
+      } else if (value is Map) {
+        items.addAll(_extractTripItems(value));
+      } else if (value != null) {
+        items.add(value);
+      }
+    }
+    return items;
+  }
+
+  List<Map<String, dynamic>> _normalizeTripList(List<dynamic> rawList) {
+    final normalized = <Map<String, dynamic>>[];
+
+    for (final item in rawList) {
+      if (item is Map<String, dynamic>) {
+        normalized.add(item);
+      } else if (item is Map) {
+        normalized.add(Map<String, dynamic>.from(item));
+      } else if (item is List) {
+        for (final child in item) {
+          if (child is Map<String, dynamic>) {
+            normalized.add(child);
+          } else if (child is Map) {
+            normalized.add(Map<String, dynamic>.from(child));
+          }
+        }
+      }
+    }
+
+    return normalized;
+  }
+
   DateTime _periodStartFor(DateTime month) {
     return DateTime(month.year, month.month - 1, 22);
   }
@@ -102,10 +151,15 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     return DateTime(month.year, month.month, 21, 23, 59, 59, 999);
   }
 
-  DateTime? _dateFromTrip(Map<String, dynamic> trip) {
-    final raw = trip['service_date']?.toString();
-    if (raw == null || raw.trim().isEmpty) return null;
+  String _formatMonthForQuery(DateTime month) {
+    final yyyy = month.year.toString().padLeft(4, '0');
+    final mm = month.month.toString().padLeft(2, '0');
+    return '$yyyy-$mm';
+  }
 
+  DateTime? _parseDate(dynamic value) {
+    final raw = value?.toString().trim();
+    if (raw == null || raw.isEmpty) return null;
     try {
       if (raw.length >= 10) {
         final y = int.parse(raw.substring(0, 4));
@@ -119,9 +173,52 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     }
   }
 
+  dynamic _dateValueFromTrip(Map<String, dynamic> trip) {
+    for (final key in const [
+      'service_date',
+      'run_date',
+      'travel_date',
+      'trip_date',
+      'date',
+      'scheduled_date',
+    ]) {
+      final value = trip[key];
+      if (value != null && value.toString().trim().isNotEmpty) return value;
+    }
+
+    final service = trip['service'];
+    if (service is Map) {
+      for (final key in const [
+        'service_date',
+        'run_date',
+        'travel_date',
+        'trip_date',
+        'date',
+        'scheduled_date',
+      ]) {
+        final value = service[key];
+        if (value != null && value.toString().trim().isNotEmpty) return value;
+      }
+    }
+
+    return null;
+  }
+
+  DateTime? _dateFromTrip(Map<String, dynamic> trip) {
+    return _parseDate(_dateValueFromTrip(trip));
+  }
+
   void _applyMonthFilter() {
     final start = _periodStartFor(_selectedMonth);
     final end = _periodEndFor(_selectedMonth);
+    final hasReadableDates = _allTrips.any(
+      (trip) => _dateFromTrip(trip) != null,
+    );
+
+    if (!hasReadableDates) {
+      _trips = List<Map<String, dynamic>>.from(_allTrips);
+      return;
+    }
 
     _trips =
         _allTrips.where((trip) {
@@ -131,14 +228,14 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
         }).toList();
   }
 
-  void _changeMonth(int delta) {
+  Future<void> _changeMonth(int delta) async {
     setState(() {
       _selectedMonth = DateTime(
         _selectedMonth.year,
         _selectedMonth.month + delta,
       );
-      _applyMonthFilter();
     });
+    await _loadTrips();
   }
 
   Future<void> _selectMonth() async {
@@ -150,8 +247,8 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     if (picked == null || !mounted) return;
     setState(() {
       _selectedMonth = DateTime(picked.year, picked.month);
-      _applyMonthFilter();
     });
+    await _loadTrips();
   }
 
   String _monthName(int month) {
@@ -351,8 +448,6 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
     return Scaffold(
       backgroundColor: const Color(0xFFF4F7FB),
       appBar: AppBar(
@@ -384,10 +479,6 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
               return _ErrorState(message: _error!, onRetry: _loadTrips);
             }
 
-            if (_trips.isEmpty && _trips.isNotEmpty) {
-              return const _EmptyState(msg: 'Aún no tienes viajes realizados.');
-            }
-
             return Column(
               children: [
                 _MonthSelector(
@@ -413,7 +504,7 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
 
                               // Campos típicos de un run:
                               final date = _formatDateFromYmd(
-                                t['service_date']?.toString(),
+                                _dateValueFromTrip(t)?.toString(),
                               );
                               final time = _hhmmFromField(t['departure_time']);
                               final installation = _installationFromTrip(t);

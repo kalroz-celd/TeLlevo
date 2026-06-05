@@ -93,6 +93,8 @@ class Auth extends ChangeNotifier {
         cancelToken: _cancelToken,
       );
 
+      debugPrint('tryToken /user response: ${response.data}');
+
       if (_disposed) return false;
 
       _isLoggedIn = true;
@@ -136,6 +138,8 @@ class Auth extends ChangeNotifier {
         options: _authHeader(token),
         cancelToken: _cancelToken,
       );
+
+      debugPrint('restoreSession /user response: ${resp.data}');
 
       if (_disposed) return false;
 

@@ -14,10 +14,13 @@ Future<void> main() async {
 
   final auth = Auth();
   await auth.restoreSession();
+  debugPrint(
+    'Auth.restoreSession → isLoggedIn=${auth.isLoggedIn}, user.id=${auth.user.id}, token=${auth.token}',
+  );
 
   runApp(
     MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => Auth())],
+      providers: [ChangeNotifierProvider.value(value: auth)],
       child: const MainApp(),
     ),
   );
