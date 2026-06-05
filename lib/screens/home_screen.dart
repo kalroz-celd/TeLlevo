@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 import 'package:tellevo/screens/login_screen.dart';
-import 'package:tellevo/screens/driver_main_screen.dart';
-import 'package:tellevo/screens/passenger_main_screen.dart';
+import 'package:tellevo/screens/role_home_resolver.dart';
 import 'package:tellevo/screens/welcome_screen.dart';
 import 'package:tellevo/services/auth.dart';
 
@@ -15,8 +14,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-
-  final storage = FlutterSecureStorage();
+  final storage = const FlutterSecureStorage();
 
   @override
   void initState() {
@@ -24,13 +22,10 @@ class _HomeScreenState extends State<HomeScreen> {
     readToken();
   }
 
-  void readToken() async{
-    String token = await storage.read(key: 'token') ?? '';
-    Provider.of<Auth>(context, listen: false).tryToken(token: token);
-  }
-
-  void _logout() {
-      Provider.of<Auth>(context, listen: false).logout();
+  Future<void> readToken() async {
+    final token = await storage.read(key: 'token') ?? '';
+    if (!mounted) return;
+    context.read<Auth>().tryToken(token: token);
   }
 
   @override
@@ -46,17 +41,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return const WelcomeScreen();
         }
         // 3) Usuario autenticado Y tiene foto → decidir según rol
-        final userRoles = auth.user.roles;
-        if (userRoles.contains('superAdmin') || userRoles.contains('admin') || userRoles.contains('driver')) {
-          return const DriverMainScreen();
-        } else if (userRoles.contains('passenger')) {
-          return const PassengerMainScreen();
-        } else {
-          // Rol desconocido
-          return Scaffold(
-            body: Center(child: Text('Rol no autorizado')),
-          );
-        }
+        return resolveHomeForRoles(auth.user.roles);
       },
     );
   }

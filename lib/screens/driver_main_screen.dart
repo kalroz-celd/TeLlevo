@@ -426,6 +426,7 @@ class _DriverMainScreenState extends State<DriverMainScreen> {
               startLng: coords.startLng,
               endLat: coords.endLat,
               endLng: coords.endLng,
+              serviceDate: _dateParam(_selectedDate),
             ),
       ),
     );

@@ -4,7 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import 'package:tellevo/core/app_colors.dart';
-import 'package:tellevo/screens/driver_main_screen.dart';
+import 'package:tellevo/screens/role_home_resolver.dart';
 import 'package:tellevo/services/auth.dart';
 
 class WelcomeScreen extends StatefulWidget {
@@ -26,6 +26,16 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
   // Debounce del tap en el avatar
   DateTime? _lastTap;
   final Duration _tapGap = const Duration(milliseconds: 450);
+
+  Future<void> _logout() async {
+    try {
+      await context.read<Auth>().logout();
+      if (!mounted) return;
+      Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);
+    } catch (e) {
+      _showSnack('No se pudo cerrar sesion: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,28 +69,59 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
                         ),
                         child: SafeArea(
                           bottom: false,
-                          child: Center(
-                            child: Hero(
-                              tag: 'tellevo-logo',
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Image.asset(
-                                    'assets/images/logo.png',
-                                    width: 88,
-                                    height: 88,
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                            child: Stack(
+                              children: [
+                                Align(
+                                  alignment: Alignment.topRight,
+                                  child: OutlinedButton.icon(
+                                    onPressed: _isLoading ? null : _logout,
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: Colors.white,
+                                      side: BorderSide(
+                                        color: Colors.white.withOpacity(.7),
+                                      ),
+                                      backgroundColor: Colors.white.withOpacity(
+                                        .12,
+                                      ),
+                                      shape: const StadiumBorder(),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 14,
+                                      ),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.logout_rounded,
+                                      size: 18,
+                                    ),
+                                    label: const Text('Cerrar sesion'),
                                   ),
-                                  const SizedBox(height: 8),
-                                  const Text(
-                                    'Tellevo',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 22,
-                                      fontWeight: FontWeight.w800,
+                                ),
+                                Center(
+                                  child: Hero(
+                                    tag: 'tellevo-logo',
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Image.asset(
+                                          'assets/images/logo.png',
+                                          width: 88,
+                                          height: 88,
+                                        ),
+                                        const SizedBox(height: 8),
+                                        const Text(
+                                          'Tellevo',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 22,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
                             ),
                           ),
                         ),
@@ -336,7 +377,9 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
         if (!mounted) return;
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const DriverMainScreen()),
+          MaterialPageRoute(
+            builder: (_) => resolveHomeForRoles(auth.user.roles),
+          ),
         );
       } else {
         _showSnack('Error al subir la foto');

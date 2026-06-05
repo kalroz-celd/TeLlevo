@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'package:tellevo/core/app_colors.dart';
+import 'package:tellevo/screens/add_passengers_screen.dart';
 import 'package:tellevo/services/auth.dart';
 import 'package:tellevo/services/dio.dart' as api;
 
@@ -22,6 +23,8 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
   String? _token;
   bool _initialized = false;
 
+  late DateTime _selectedMonth;
+  List<Map<String, dynamic>> _allTrips = [];
   List<Map<String, dynamic>> _trips = [];
 
   void _safeSet(void Function() fn) {
@@ -35,6 +38,8 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     if (!_initialized) {
       _client = api.dio();
       _token = context.read<Auth>().token;
+      final now = DateTime.now();
+      _selectedMonth = DateTime(now.year, now.month);
       _loadTrips();
       _initialized = true;
     }
@@ -71,7 +76,8 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
       }
 
       _safeSet(() {
-        _trips = list.cast<Map<String, dynamic>>();
+        _allTrips = list.cast<Map<String, dynamic>>();
+        _applyMonthFilter();
       });
     } on DioException catch (e) {
       final status = e.response?.statusCode;
@@ -86,6 +92,100 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     } finally {
       _safeSet(() => _loading = false);
     }
+  }
+
+  DateTime _periodStartFor(DateTime month) {
+    return DateTime(month.year, month.month - 1, 22);
+  }
+
+  DateTime _periodEndFor(DateTime month) {
+    return DateTime(month.year, month.month, 21, 23, 59, 59, 999);
+  }
+
+  DateTime? _dateFromTrip(Map<String, dynamic> trip) {
+    final raw = trip['service_date']?.toString();
+    if (raw == null || raw.trim().isEmpty) return null;
+
+    try {
+      if (raw.length >= 10) {
+        final y = int.parse(raw.substring(0, 4));
+        final m = int.parse(raw.substring(5, 7));
+        final d = int.parse(raw.substring(8, 10));
+        return DateTime(y, m, d);
+      }
+      return DateTime.parse(raw).toLocal();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _applyMonthFilter() {
+    final start = _periodStartFor(_selectedMonth);
+    final end = _periodEndFor(_selectedMonth);
+
+    _trips =
+        _allTrips.where((trip) {
+          final date = _dateFromTrip(trip);
+          if (date == null) return false;
+          return !date.isBefore(start) && !date.isAfter(end);
+        }).toList();
+  }
+
+  void _changeMonth(int delta) {
+    setState(() {
+      _selectedMonth = DateTime(
+        _selectedMonth.year,
+        _selectedMonth.month + delta,
+      );
+      _applyMonthFilter();
+    });
+  }
+
+  Future<void> _selectMonth() async {
+    final picked = await showDialog<DateTime>(
+      context: context,
+      builder: (context) => _MonthPickerDialog(initialMonth: _selectedMonth),
+    );
+
+    if (picked == null || !mounted) return;
+    setState(() {
+      _selectedMonth = DateTime(picked.year, picked.month);
+      _applyMonthFilter();
+    });
+  }
+
+  String _monthName(int month) {
+    const names = [
+      'Enero',
+      'Febrero',
+      'Marzo',
+      'Abril',
+      'Mayo',
+      'Junio',
+      'Julio',
+      'Agosto',
+      'Septiembre',
+      'Octubre',
+      'Noviembre',
+      'Diciembre',
+    ];
+    return names[month - 1];
+  }
+
+  String _formatDateFromDate(DateTime date) {
+    final dd = date.day.toString().padLeft(2, '0');
+    final mm = date.month.toString().padLeft(2, '0');
+    return '$dd/$mm/${date.year}';
+  }
+
+  String _selectedMonthLabel() {
+    return '${_monthName(_selectedMonth.month)} ${_selectedMonth.year}';
+  }
+
+  String _selectedPeriodLabel() {
+    final start = _periodStartFor(_selectedMonth);
+    final end = _periodEndFor(_selectedMonth);
+    return '${_formatDateFromDate(start)} al ${_formatDateFromDate(end)}';
   }
 
   String _formatDateFromYmd(String? ymd) {
@@ -157,6 +257,98 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
     return 0;
   }
 
+  double? _asDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString());
+  }
+
+  String _directionFromTrip(Map<String, dynamic> t) {
+    final service = t['service'];
+    final dir =
+        (service is Map ? service['direction'] : t['direction'])
+            ?.toString()
+            .toUpperCase();
+    return (dir == 'VUELTA' || dir == 'IDA') ? dir! : '';
+  }
+
+  String _serviceText(
+    Map<String, dynamic> service,
+    List<String> keys,
+    String fallback,
+  ) {
+    for (final key in keys) {
+      final value = service[key]?.toString().trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return fallback;
+  }
+
+  ({double? startLat, double? startLng, double? endLat, double? endLng})
+  _coordsFromService(Map<String, dynamic> service, String direction) {
+    final rawStartLng = _asDouble(service['start_x_coord']);
+    final rawStartLat = _asDouble(service['start_y_coord']);
+    final rawEndLng = _asDouble(service['end_x_coord']);
+    final rawEndLat = _asDouble(service['end_y_coord']);
+
+    if (direction.toLowerCase() == 'vuelta') {
+      return (
+        startLat: rawEndLat,
+        startLng: rawEndLng,
+        endLat: rawStartLat,
+        endLng: rawStartLng,
+      );
+    }
+    return (
+      startLat: rawStartLat,
+      startLng: rawStartLng,
+      endLat: rawEndLat,
+      endLng: rawEndLng,
+    );
+  }
+
+  Future<void> _openPassengersForTrip(Map<String, dynamic> trip) async {
+    final serviceRaw = trip['service'];
+    final service =
+        serviceRaw is Map<String, dynamic>
+            ? serviceRaw
+            : serviceRaw is Map
+            ? Map<String, dynamic>.from(serviceRaw)
+            : <String, dynamic>{};
+    final direction = _directionFromTrip(trip);
+    final coords = _coordsFromService(service, direction);
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder:
+            (_) => AddPassengersScreen(
+              run: trip,
+              installationName: _installationFromTrip(trip),
+              direction: direction,
+              startName: _serviceText(service, const [
+                'start_location',
+                'start_name',
+                'origin',
+              ], 'Inicio'),
+              endName: _serviceText(service, const [
+                'end_location',
+                'end_name',
+                'destination',
+              ], 'Destino'),
+              startLat: coords.startLat,
+              startLng: coords.startLng,
+              endLat: coords.endLat,
+              endLng: coords.endLng,
+              serviceDate: trip['service_date']?.toString(),
+            ),
+      ),
+    );
+
+    if (!mounted) return;
+    await _loadTrips();
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -192,32 +384,54 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
               return _ErrorState(message: _error!, onRetry: _loadTrips);
             }
 
-            if (_trips.isEmpty) {
+            if (_trips.isEmpty && _trips.isNotEmpty) {
               return const _EmptyState(msg: 'Aún no tienes viajes realizados.');
             }
 
-            return ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: _trips.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (context, i) {
-                final t = _trips[i];
+            return Column(
+              children: [
+                _MonthSelector(
+                  monthLabel: _selectedMonthLabel(),
+                  periodLabel: _selectedPeriodLabel(),
+                  onPrevious: () => _changeMonth(-1),
+                  onNext: () => _changeMonth(1),
+                  onSelect: _selectMonth,
+                ),
+                Expanded(
+                  child:
+                      _trips.isEmpty
+                          ? const _EmptyState(
+                            msg: 'No tienes viajes realizados en este periodo.',
+                          )
+                          : ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                            itemCount: _trips.length,
+                            separatorBuilder:
+                                (_, __) => const SizedBox(height: 12),
+                            itemBuilder: (context, i) {
+                              final t = _trips[i];
 
-                // Campos típicos de un run:
-                final date = _formatDateFromYmd(t['service_date']?.toString());
-                final time = _hhmmFromField(t['departure_time']);
-                final installation = _installationFromTrip(t);
-                final route = _routeFromService(t['service']);
-                final passengers = _passengersCountFromTrip(t);
+                              // Campos típicos de un run:
+                              final date = _formatDateFromYmd(
+                                t['service_date']?.toString(),
+                              );
+                              final time = _hhmmFromField(t['departure_time']);
+                              final installation = _installationFromTrip(t);
+                              final route = _routeFromService(t['service']);
+                              final passengers = _passengersCountFromTrip(t);
 
-                return _HistoryTripCard(
-                  date: date,
-                  installation: installation,
-                  route: route,
-                  time: time,
-                  passengers: passengers,
-                );
-              },
+                              return _HistoryTripCard(
+                                date: date,
+                                installation: installation,
+                                route: route,
+                                time: time,
+                                passengers: passengers,
+                                onTap: () => _openPassengersForTrip(t),
+                              );
+                            },
+                          ),
+                ),
+              ],
             );
           },
         ),
@@ -227,6 +441,209 @@ class _DriverTripsHistoryScreenState extends State<DriverTripsHistoryScreen> {
 }
 
 /// ---------- Card de viaje histórico ----------
+class _MonthSelector extends StatelessWidget {
+  const _MonthSelector({
+    required this.monthLabel,
+    required this.periodLabel,
+    required this.onPrevious,
+    required this.onNext,
+    required this.onSelect,
+  });
+
+  final String monthLabel;
+  final String periodLabel;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: scheme.outline.withOpacity(.25)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Mes anterior',
+                onPressed: onPrevious,
+                icon: const Icon(Icons.chevron_left_rounded),
+              ),
+              Expanded(
+                child: TextButton.icon(
+                  onPressed: onSelect,
+                  icon: const Icon(Icons.calendar_month_rounded),
+                  label: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        monthLabel,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        periodLabel,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: scheme.onSurfaceVariant,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Mes siguiente',
+                onPressed: onNext,
+                icon: const Icon(Icons.chevron_right_rounded),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MonthPickerDialog extends StatefulWidget {
+  const _MonthPickerDialog({required this.initialMonth});
+
+  final DateTime initialMonth;
+
+  @override
+  State<_MonthPickerDialog> createState() => _MonthPickerDialogState();
+}
+
+class _MonthPickerDialogState extends State<_MonthPickerDialog> {
+  late int _year;
+
+  @override
+  void initState() {
+    super.initState();
+    _year = widget.initialMonth.year;
+  }
+
+  String _monthName(int month) {
+    const names = [
+      'Ene',
+      'Feb',
+      'Mar',
+      'Abr',
+      'May',
+      'Jun',
+      'Jul',
+      'Ago',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dic',
+    ];
+    return names[month - 1];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return AlertDialog(
+      title: const Text('Seleccionar mes'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  tooltip: 'Ano anterior',
+                  onPressed: () => setState(() => _year--),
+                  icon: const Icon(Icons.chevron_left_rounded),
+                ),
+                SizedBox(
+                  width: 96,
+                  child: Text(
+                    _year.toString(),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Ano siguiente',
+                  onPressed: () => setState(() => _year++),
+                  icon: const Icon(Icons.chevron_right_rounded),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+                childAspectRatio: 2.4,
+              ),
+              itemCount: 12,
+              itemBuilder: (context, index) {
+                final month = index + 1;
+                final selected =
+                    _year == widget.initialMonth.year &&
+                    month == widget.initialMonth.month;
+                return OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor:
+                        selected ? scheme.primaryContainer : scheme.surface,
+                    foregroundColor:
+                        selected ? scheme.onPrimaryContainer : scheme.onSurface,
+                    side: BorderSide(
+                      color:
+                          selected
+                              ? scheme.primary
+                              : scheme.outline.withOpacity(.35),
+                    ),
+                  ),
+                  onPressed: () {
+                    Navigator.pop(context, DateTime(_year, month));
+                  },
+                  child: Text(
+                    _monthName(month),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+      ],
+    );
+  }
+}
+
 class _HistoryTripCard extends StatelessWidget {
   const _HistoryTripCard({
     required this.date,
@@ -234,6 +651,7 @@ class _HistoryTripCard extends StatelessWidget {
     required this.route,
     required this.time,
     required this.passengers,
+    required this.onTap,
   });
 
   final String date;
@@ -241,89 +659,111 @@ class _HistoryTripCard extends StatelessWidget {
   final String route;
   final String time;
   final int passengers;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
 
-    return Container(
-      decoration: BoxDecoration(
+    return Material(
+      color: scheme.surface,
+      borderRadius: BorderRadius.circular(18),
+      elevation: 0,
+      shadowColor: Colors.black.withOpacity(.05),
+      child: InkWell(
         borderRadius: BorderRadius.circular(18),
-        color: scheme.surface,
-        border: Border.all(color: scheme.outline.withOpacity(.25)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(.05),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Fecha + Hora
-          Row(
-            children: [
-              const Icon(Icons.calendar_today_rounded, size: 16),
-              const SizedBox(width: 6),
-              Text(date, style: const TextStyle(fontWeight: FontWeight.w700)),
-              const Spacer(),
-              const Icon(Icons.schedule_rounded, size: 16),
-              const SizedBox(width: 4),
-              Text(time, style: const TextStyle(fontWeight: FontWeight.w600)),
+        onTap: onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: scheme.outline.withOpacity(.25)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(.05),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
             ],
           ),
-          const SizedBox(height: 10),
-
-          // Instalación
-          Row(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.location_on_rounded, size: 18),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  installation,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
+              // Fecha + Hora
+              Row(
+                children: [
+                  const Icon(Icons.calendar_today_rounded, size: 16),
+                  const SizedBox(width: 6),
+                  Text(
+                    date,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
-                ),
+                  const Spacer(),
+                  const Icon(Icons.schedule_rounded, size: 16),
+                  const SizedBox(width: 4),
+                  Text(
+                    time,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+
+              // Instalación
+              Row(
+                children: [
+                  const Icon(Icons.location_on_rounded, size: 18),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      installation,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
+
+              // Ruta + pasajeros
+              Row(
+                children: [
+                  Icon(
+                    route == 'IDA'
+                        ? Icons.north_east_rounded
+                        : Icons.south_west_rounded,
+                    size: 18,
+                    color: scheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    route,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: scheme.primary,
+                    ),
+                  ),
+                  const Spacer(),
+                  const Icon(Icons.people_rounded, size: 18),
+                  const SizedBox(width: 4),
+                  Text(
+                    '$passengers pasajeros',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 22,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ],
               ),
             ],
           ),
-
-          const SizedBox(height: 8),
-
-          // Ruta + pasajeros
-          Row(
-            children: [
-              Icon(
-                route == 'IDA'
-                    ? Icons.north_east_rounded
-                    : Icons.south_west_rounded,
-                size: 18,
-                color: scheme.primary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                route,
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: scheme.primary,
-                ),
-              ),
-              const Spacer(),
-              const Icon(Icons.people_rounded, size: 18),
-              const SizedBox(width: 4),
-              Text(
-                '$passengers pasajeros',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }

@@ -27,6 +27,7 @@ class AddPassengersScreen extends StatefulWidget {
     this.endLat,
     this.endLng,
     this.defaultTo,
+    this.serviceDate,
   });
 
   final Map<String, dynamic> run;
@@ -41,6 +42,7 @@ class AddPassengersScreen extends StatefulWidget {
   final double? endLng;
 
   final dynamic defaultTo;
+  final String? serviceDate;
 
   @override
   State<AddPassengersScreen> createState() => _AddPassengersScreenState();
@@ -119,15 +121,72 @@ class _AddPassengersScreenState extends State<AddPassengersScreen> {
     setState(fn);
   }
 
-  String _todayDdMmYyyy() {
+  String? _ymdFromValue(dynamic raw) {
+    final value = raw?.toString().trim();
+    if (value == null || value.isEmpty || value.toLowerCase() == 'null') {
+      return null;
+    }
+
+    if (RegExp(r'^\d{4}-\d{2}-\d{2}').hasMatch(value)) {
+      return value.substring(0, 10);
+    }
+
+    try {
+      final parsed = DateTime.parse(value);
+      final cl = tz.TZDateTime.from(parsed, _chileLoc);
+      final yyyy = cl.year.toString().padLeft(4, '0');
+      final mm = cl.month.toString().padLeft(2, '0');
+      final dd = cl.day.toString().padLeft(2, '0');
+      return '$yyyy-$mm-$dd';
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _runDateYmd() {
+    final explicitDate = _ymdFromValue(widget.serviceDate);
+    if (explicitDate != null) return explicitDate;
+
+    for (final key in const [
+      'service_date',
+      'run_date',
+      'date',
+      'scheduled_date',
+      'completed_at',
+      'started_at',
+      'created_at',
+    ]) {
+      final ymd = _ymdFromValue(widget.run[key]);
+      if (ymd != null) return ymd;
+    }
+
+    final service = widget.run['service'];
+    if (service is Map) {
+      for (final key in const ['service_date', 'date', 'scheduled_date']) {
+        final ymd = _ymdFromValue(service[key]);
+        if (ymd != null) return ymd;
+      }
+    }
+
     final nowCl = tz.TZDateTime.now(_chileLoc);
-    final dd = nowCl.day.toString().padLeft(2, '0');
+    final yyyy = nowCl.year.toString().padLeft(4, '0');
     final mm = nowCl.month.toString().padLeft(2, '0');
-    final yyyy = nowCl.year.toString();
-    return '$dd/$mm/$yyyy';
+    final dd = nowCl.day.toString().padLeft(2, '0');
+    return '$yyyy-$mm-$dd';
+  }
+
+  String _runDateDdMmYyyy() {
+    final ymd = _runDateYmd();
+    return '${ymd.substring(8, 10)}/${ymd.substring(5, 7)}/${ymd.substring(0, 4)}';
   }
 
   // ¿La cadena ISO trae zona explícita? (Z o ±hh:mm al final)
+  String _dateTimeForReport(String ymd, String? hhmm) {
+    final time = (hhmm ?? '').trim();
+    if (!RegExp(r'^\d{2}:\d{2}$').hasMatch(time)) return ymd;
+    return '$ymd $time:00';
+  }
+
   bool _hasTzOffset(String s) {
     return RegExp(r'(Z|[+-]\d{2}:\d{2})$').hasMatch(s.trim());
   }
@@ -612,6 +671,7 @@ class _AddPassengersScreenState extends State<AddPassengersScreen> {
       List l => l.map((e) => e.toString()).toList(),
       _ => const [],
     };
+    final serviceDate = _runDateYmd();
 
     final passengers =
         _rows
@@ -619,7 +679,12 @@ class _AddPassengersScreenState extends State<AddPassengersScreen> {
               (p) => {
                 'name': p['name'] ?? '',
                 'rut': p['rut'] ?? '',
-                'scanned_at': p['scannedAt'] ?? '',
+                'scanned_at': _dateTimeForReport(serviceDate, p['scannedAt']),
+                'checked_in_at': _dateTimeForReport(
+                  serviceDate,
+                  p['scannedAt'],
+                ),
+                'scanned_time': p['scannedAt'] ?? '',
               },
             )
             .toList();
@@ -636,6 +701,7 @@ class _AddPassengersScreenState extends State<AddPassengersScreen> {
         to: to,
         cc: const [],
         attachCsv: true,
+        serviceDate: serviceDate,
         passengers: passengers,
       );
       if (!mounted) return;
@@ -804,7 +870,7 @@ class _AddPassengersScreenState extends State<AddPassengersScreen> {
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                           Text(
-                            'Fecha: ${_todayDdMmYyyy()}',
+                            'Fecha: ${_runDateDdMmYyyy()}',
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                         ],
